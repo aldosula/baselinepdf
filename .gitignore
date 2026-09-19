@@ -1,0 +1,8 @@
+node_modules
+dist
+check-export.pdf
+*.local
+.DS_Store
+var
+public/sample
+.claude

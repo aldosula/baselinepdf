@@ -1,0 +1,106 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+   PDF Studio design tokens
+   Flat, low-chrome workspace. Tinted neutrals (never pure gray), teal for
+   primary intent, amber-orange reserved exclusively for "commit to file".
+--------------------------------------------------------------------------- */
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-script: "Dancing Script", cursive;
+
+  --color-ink-50: #f4f7f8;
+  --color-ink-100: #e7edef;
+  --color-ink-200: #d3dcdf;
+  --color-ink-300: #b0bec3;
+  --color-ink-400: #7d9097;
+  --color-ink-500: #5a6d74;
+  --color-ink-600: #45565c;
+  --color-ink-700: #35444a;
+  --color-ink-800: #212e33;
+  --color-ink-900: #141e22;
+  --color-ink-950: #0b1316;
+
+  --color-brand-50: #eefbf8;
+  --color-brand-100: #d2f5ee;
+  --color-brand-300: #6fdac7;
+  --color-brand-500: #14b8a6;
+  --color-brand-600: #0d9488;
+  --color-brand-700: #0f766e;
+
+  --color-flare-500: #ea580c;
+  --color-flare-600: #d14a05;
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 9px;
+  --radius-lg: 13px;
+
+  --ease-out-soft: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+:root {
+  --surface: #ffffff;
+  --surface-2: var(--color-ink-50);
+  --workbench: #dfe6e8;
+  --line: var(--color-ink-200);
+  --text: var(--color-ink-900);
+  --text-dim: var(--color-ink-500);
+  --shadow-page: 0 1px 2px rgb(11 19 22 / 0.10), 0 12px 28px -12px rgb(11 19 22 / 0.28);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --surface: #172227;
+  --surface-2: #101a1e;
+  --workbench: #0b1316;
+  --line: #2a383e;
+  --text: var(--color-ink-100);
+  --text-dim: var(--color-ink-400);
+  --shadow-page: 0 1px 2px rgb(0 0 0 / 0.5), 0 14px 30px -12px rgb(0 0 0 / 0.65);
+  color-scheme: dark;
+}
+
+@layer base {
+  * { border-color: var(--line); }
+  html, body, #root { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--workbench);
+    color: var(--text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+  }
+  button, [role="button"] { cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+  :focus-visible {
+    outline: 2px solid var(--color-brand-500);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+  ::selection { background: color-mix(in srgb, var(--color-brand-500) 30%, transparent); }
+}
+
+@layer utilities {
+  .surface { background: var(--surface); }
+  .surface-2 { background: var(--surface-2); }
+  .text-dim { color: var(--text-dim); }
+  .hairline { border: 1px solid var(--line); }
+  .page-shadow { box-shadow: var(--shadow-page); }
+  .no-scrollbar::-webkit-scrollbar { width: 10px; height: 10px; }
+  .no-scrollbar::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--text-dim) 35%, transparent);
+    border-radius: 99px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  .no-scrollbar::-webkit-scrollbar-track { background: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
