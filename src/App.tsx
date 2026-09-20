@@ -209,7 +209,7 @@ export default function App() {
         if (obj?.kind === 'text') { e.preventDefault(); s.setEditingText(obj.id) }
         return
       }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && s.selection.length) { e.preventDefault(); s.remove(s.selection); return }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && s.selection.length) { e.preventDefault(); s.deleteSelection(); return }
 
       if (e.key.startsWith('Arrow') && s.selection.length) {
         e.preventDefault()

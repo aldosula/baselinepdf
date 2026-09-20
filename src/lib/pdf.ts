@@ -1,7 +1,7 @@
 import * as pdfjs from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist'
-import type { FontKey, PageInfo, Rect, TextLine, TextRun } from './types'
+import type { FontKey, PageImage, PageInfo, Rect, TextLine, TextRun } from './types'
 import { uid } from './id'
 import { unionRects } from './geometry'
 
@@ -96,16 +96,23 @@ export async function extractRuns(page: PDFPageProxy): Promise<TextRun[]> {
     const ascent = typeof style.ascent === 'number' && style.ascent > 0 ? style.ascent : 0.78
     const descent = typeof style.descent === 'number' ? Math.abs(style.descent) : 0.22
 
-    let name = String(style.fontFamily ?? '')
+    const family = String(style.fontFamily ?? '')
+    let realName = ''
     try {
       const obj = item.fontName ? (page.commonObjs.has(item.fontName) ? page.commonObjs.get(item.fontName) : null) : null
-      if (obj && typeof obj === 'object' && 'name' in obj) name = `${(obj as { name?: string }).name ?? ''} ${name}`
+      if (obj && typeof obj === 'object' && 'name' in obj) realName = String((obj as { name?: string }).name ?? '')
     } catch { /* font not resolved yet: the family name alone is enough */ }
+    // the traits are read from both, but only the real name can be matched
+    // against the font resources in the file
+    const name = `${realName} ${family}`
 
     runs.push({
       id: uid('run'),
       page: page.pageNumber,
       str: item.str,
+      fontId: item.fontName ?? '',
+      fontName: (realName || family).trim(),
+      ascentEm: ascent,
       x: tx[4],
       y: tx[5],
       width: item.width ?? 0,
@@ -153,7 +160,9 @@ function detectColumns(rows: TextRun[][]): number[] {
   return [...tally.entries()].filter(([, seen]) => seen.size >= 3).map(([x]) => x).sort((a, b) => a - b)
 }
 
-/** Splits one row at its column gutters. */
+/** Splits one row at its column gutters, and at anything that is plainly not a
+ *  continuation: a run that starts back under the previous one is a separate
+ *  piece of text, not the next word. */
 function splitCells(ordered: TextRun[], columns: number[]): TextRun[][] {
   const cells: TextRun[][] = []
   let current: TextRun[] = []
@@ -165,7 +174,8 @@ function splitCells(ordered: TextRun[], columns: number[]): TextRun[][] {
       // a word space is about a quarter of an em, and justification stretches
       // it; a gutter is far wider than anything justification produces
       const onColumn = columns.some(c => Math.abs(run.x - c) <= 1.2)
-      if (gap > em * 1.1 || (onColumn && gap > em * 0.5)) {
+      const overlaps = gap < -em * 0.4
+      if (overlaps || gap > em * 1.1 || (onColumn && gap > em * 0.5)) {
         cells.push(current)
         current = []
       }
@@ -174,6 +184,22 @@ function splitCells(ordered: TextRun[], columns: number[]): TextRun[][] {
   }
   if (current.length) cells.push(current)
   return cells
+}
+
+/** Some files paint the same string several times in the same place, to fake a
+ *  bolder weight or because the exporter wrote both a visible and a hidden
+ *  layer. Stacking those into one line produces nonsense like
+ *  "Next roundNext roundNext round", so the copies are dropped. */
+function dropDuplicates(runs: TextRun[]): TextRun[] {
+  const kept: TextRun[] = []
+  for (const run of runs) {
+    const twin = kept.some(k =>
+      k.str === run.str &&
+      Math.abs(k.x - run.x) < Math.max(0.8, run.fontSize * 0.08) &&
+      Math.abs(k.y - run.y) < Math.max(0.8, run.fontSize * 0.08))
+    if (!twin) kept.push(run)
+  }
+  return kept
 }
 
 /** The run that carries most of the characters decides the font and the size,
@@ -195,6 +221,7 @@ function lineFrom(ordered: TextRun[], padLeft: number, padRight: number): TextLi
   })
   const lead = dominant(ordered)
   return {
+    source: { fontId: lead.fontId, fontName: lead.fontName, ascentEm: lead.ascentEm },
     id: uid('line'),
     page: ordered[0].page,
     runs: ordered,
@@ -224,10 +251,10 @@ export function buildLines(runs: TextRun[]): TextLine[] {
       Math.abs(run.y - head.y) < Math.max(2, head.fontSize * 0.34) &&
       Math.abs(run.angle - head.angle) < 1 &&
       run.x > head.x - head.fontSize * 8
-    if (!sameLine && bucket.length) { rows.push([...bucket].sort((a, b) => a.x - b.x)); bucket = [] }
+    if (!sameLine && bucket.length) { rows.push(dropDuplicates([...bucket].sort((a, b) => a.x - b.x))); bucket = [] }
     bucket.push(run)
   }
-  if (bucket.length) rows.push([...bucket].sort((a, b) => a.x - b.x))
+  if (bucket.length) rows.push(dropDuplicates([...bucket].sort((a, b) => a.x - b.x)))
 
   const columns = detectColumns(rows)
 
@@ -249,6 +276,74 @@ export function buildLines(runs: TextRun[]): TextLine[] {
       return row
     })
     .filter(l => l.text.length > 0)
+}
+
+/** Walks the page's drawing operators to find where its pictures sit. The
+ *  operator list is the only place that knows: an image is painted into the
+ *  unit square and placed by whatever the transform matrix happens to be. */
+export async function extractImages(page: PDFPageProxy): Promise<PageImage[]> {
+  const viewport = page.getViewport({ scale: 1 })
+  let list
+  try {
+    list = await page.getOperatorList()
+  } catch {
+    return []
+  }
+
+  const { OPS, Util } = pdfjs
+  const out: PageImage[] = []
+  let ctm: number[] = [1, 0, 0, 1, 0, 0]
+  const stack: number[][] = []
+
+  for (let i = 0; i < list.fnArray.length; i++) {
+    const fn = list.fnArray[i]
+    const args = list.argsArray[i] as unknown[]
+
+    if (fn === OPS.save) { stack.push(ctm.slice()); continue }
+    if (fn === OPS.restore) { ctm = stack.pop() ?? [1, 0, 0, 1, 0, 0]; continue }
+    if (fn === OPS.transform) { ctm = Util.transform(ctm, args as number[]); continue }
+
+    const paints =
+      fn === OPS.paintImageXObject ||
+      fn === OPS.paintImageXObjectRepeat ||
+      fn === OPS.paintInlineImageXObject ||
+      fn === OPS.paintImageMaskXObject
+    if (!paints) continue
+
+    const m = Util.transform(viewport.transform, ctm)
+    const corners = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([x, y]) => ({
+      x: m[0] * x + m[2] * y + m[4],
+      y: m[1] * x + m[3] * y + m[5],
+    }))
+    const xs = corners.map(c => c.x), ys = corners.map(c => c.y)
+    const rect = {
+      x: Math.min(...xs), y: Math.min(...ys),
+      w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys),
+    }
+    // hairline rules and spacer pixels are images too, and nobody wants to grab those
+    if (rect.w < 6 || rect.h < 6) continue
+    out.push({ id: uid('img'), page: page.pageNumber, rect, area: rect.w * rect.h })
+  }
+
+  return out.sort((a, b) => a.area - b.area)
+}
+
+/** Crops a region of the page out of a fresh high-resolution render, which is
+ *  how a picture already in the document becomes one you can move. */
+export async function cropRegion(page: PDFPageProxy, rect: Rect, scale = 3): Promise<{ src: string; w: number; h: number } | null> {
+  const rendered = await renderPage(page, scale)
+  if (!rendered) return null
+  const k = rendered.scale
+  const out = document.createElement('canvas')
+  out.width = Math.max(1, Math.round(rect.w * k))
+  out.height = Math.max(1, Math.round(rect.h * k))
+  out.getContext('2d')!.drawImage(
+    rendered.canvas,
+    Math.round(rect.x * k), Math.round(rect.y * k),
+    out.width, out.height,
+    0, 0, out.width, out.height,
+  )
+  return { src: out.toDataURL('image/png'), w: out.width, h: out.height }
 }
 
 export type Sampled = { ink: string; background: string }

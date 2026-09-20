@@ -35,6 +35,9 @@ export type TextObj = Base & {
   align: 'left' | 'center' | 'right'
   lineGap: number
   origin: 'new' | 'replace'
+  /** when set, the text is written in the document's own font rather than in
+   *  one of the 14 standard ones */
+  source?: { fontId: string; fontName: string; ascentEm: number }
   /** the original glyph box that must be covered, page space */
   mask?: Rect
   maskColor?: string
@@ -95,11 +98,26 @@ export type PageInfo = {
   userRotation: number
 }
 
+/** A picture already in the document, located in page space. */
+export type PageImage = {
+  id: string
+  page: number
+  rect: Rect
+  /** area in square points, used to pick the most specific one under a click */
+  area: number
+}
+
 /** One extracted run of existing PDF text, page space. */
 export type TextRun = {
   id: string
   page: number
   str: string
+  /** pdf.js loaded name, which is also the CSS family it installs */
+  fontId: string
+  /** the font's real name in the file, e.g. Arial-BoldMT */
+  fontName: string
+  /** ascent as a fraction of the em, straight from the file */
+  ascentEm: number
   /** baseline start */
   x: number
   y: number
@@ -129,6 +147,8 @@ export type TextLine = {
   angle: number
   text: string
   font: FontKey
+  /** the document's own font for this line, used to keep it on export */
+  source: { fontId: string; fontName: string; ascentEm: number }
   /** empty on a cell, one entry per column on a row that was split */
   cells: TextLine[]
   /** how far the cover patch may spread before it touches the next cell */

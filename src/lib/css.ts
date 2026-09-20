@@ -27,12 +27,17 @@ export const FONT_LABELS: Record<FontKey, string> = {
   'Courier-Oblique': 'Courier Italic', 'Courier-BoldOblique': 'Courier Bold Italic',
 }
 
-export function cssFont(font: FontKey, sizePx: number) {
-  const family = font.startsWith('Times')
+export type FontSource = { fontId: string; fontName: string; ascentEm: number }
+
+export function cssFont(font: FontKey, sizePx: number, source?: FontSource) {
+  const fallback = font.startsWith('Times')
     ? '"Times New Roman", Times, serif'
     : font.startsWith('Courier')
       ? '"Courier New", Courier, monospace'
       : '"Helvetica Neue", Helvetica, Arial, sans-serif'
+  // pdf.js installs the document's own fonts under their loaded name, so the
+  // preview can use the real face rather than a lookalike
+  const family = source?.fontId ? `"${source.fontId}", ${fallback}` : fallback
   const weight = /Bold/.test(font) ? 700 : 400
   const style = /Italic|Oblique/.test(font) ? 'italic' : 'normal'
   return { fontFamily: family, fontWeight: weight, fontStyle: style, fontSize: `${sizePx}px` } as const
@@ -40,17 +45,17 @@ export function cssFont(font: FontKey, sizePx: number) {
 
 const boxCache = new Map<string, { asc: number; desc: number }>()
 
-/** Real ascent of the substitute screen font, so the preview baseline can be
- *  matched to the PDF baseline instead of drifting by a couple of points. */
-export function screenFontBox(font: FontKey) {
-  const key = font
+/** Real ascent of the font the screen will actually use, so the preview
+ *  baseline can be matched to the PDF baseline instead of drifting. */
+export function screenFontBox(font: FontKey, source?: FontSource) {
+  const key = source?.fontId ? `src:${source.fontId}` : font
   const cached = boxCache.get(key)
   if (cached) return cached
   const fallback = { asc: 0.9, desc: 0.22 }
   try {
     const ctx = document.createElement('canvas').getContext('2d')
     if (!ctx) return fallback
-    const f = cssFont(font, 100)
+    const f = cssFont(font, 100, source)
     ctx.font = `${f.fontStyle} ${f.fontWeight} 100px ${f.fontFamily}`
     const m = ctx.measureText('Hxy')
     const box = {
@@ -64,13 +69,15 @@ export function screenFontBox(font: FontKey) {
   }
 }
 
-/** Distance from the top of a text box to the first baseline, in points. */
-export const baselineOffset = (font: FontKey, size: number) => METRICS[font].asc * size
+/** Distance from the top of a text box to the first baseline, in points. The
+ *  document's own ascent wins when the document's own font is being used. */
+export const baselineOffset = (font: FontKey, size: number, source?: FontSource) =>
+  (source ? source.ascentEm : METRICS[font].asc) * size
 
 /** CSS top offset that makes the browser put its first baseline exactly where
  *  the PDF will put it. */
-export function previewTopShift(font: FontKey, size: number, lineHeight: number) {
-  const screen = screenFontBox(font)
+export function previewTopShift(font: FontKey, size: number, lineHeight: number, source?: FontSource) {
+  const screen = screenFontBox(font, source)
   const cssBaseline = (lineHeight - (screen.asc + screen.desc) * size) / 2 + screen.asc * size
-  return baselineOffset(font, size) - cssBaseline
+  return baselineOffset(font, size, source) - cssBaseline
 }

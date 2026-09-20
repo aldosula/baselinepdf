@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
-import type { AnyObj, FontKey, PageInfo, Rect, TextLine, ToolId } from './types'
+import type { AnyObj, FontKey, PageImage, PageInfo, Rect, TextLine, ToolId } from './types'
 import { loadPdf } from './pdf'
 import { idbGet, idbSet } from './idb'
 import { forgetRecent, keepBytes, keepEdits, listRecents, readBytes, readEdits, recentId, touchRecent, type RecentDoc } from './recents'
@@ -41,6 +41,7 @@ type State = {
   objects: AnyObj[]
   lines: Record<number, TextLine[]>
   linesLoading: Record<number, boolean>
+  images: Record<number, PageImage[]>
 
   tool: ToolId
   options: ToolOptions
@@ -74,6 +75,7 @@ type Actions = {
   setActivePage: (i: number) => void
   setTheme: (t: 'light' | 'dark') => void
   setLines: (page: number, lines: TextLine[]) => void
+  setImages: (page: number, images: PageImage[]) => void
   markLinesLoading: (page: number) => void
 
   select: (ids: string[]) => void
@@ -86,6 +88,7 @@ type Actions = {
   add: (obj: AnyObj) => void
   update: (id: string, patch: Partial<AnyObj>) => void
   remove: (ids: string[]) => void
+  deleteSelection: () => void
   duplicate: (ids: string[]) => void
   bring: (id: string, dir: 'front' | 'back') => void
   undo: () => void
@@ -120,6 +123,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   objects: [],
   lines: {},
   linesLoading: {},
+  images: {},
 
   tool: 'select',
   options: {
@@ -166,6 +170,7 @@ export const useStore = create<State & Actions>((set, get) => ({
         objects: [],
         lines: {},
         linesLoading: {},
+        images: {},
         past: [],
         future: [],
         selection: [],
@@ -214,6 +219,7 @@ export const useStore = create<State & Actions>((set, get) => ({
         objects: stored?.objects ?? [],
         lines: {},
         linesLoading: {},
+        images: {},
         past: [],
         future: [],
         selection: [],
@@ -293,6 +299,9 @@ export const useStore = create<State & Actions>((set, get) => ({
   setLines(page, lines) {
     set(s => ({ lines: { ...s.lines, [page]: lines }, linesLoading: { ...s.linesLoading, [page]: false } }))
   },
+  setImages(page, images) {
+    set(s => ({ images: { ...s.images, [page]: images } }))
+  },
   markLinesLoading(page) { set(s => ({ linesLoading: { ...s.linesLoading, [page]: true } })) },
 
   select(selection) { set({ selection }) },
@@ -339,6 +348,24 @@ export const useStore = create<State & Actions>((set, get) => ({
     get().mutate(d => { d.objects = d.objects.filter(o => !ids.includes(o.id)) })
     set({ selection: [], editingTextId: null })
   },
+  /** Delete on a replaced line means "make this text go away", so the first
+   *  press empties it and leaves the patch covering the original. Press again
+   *  and the patch goes too, which brings the original text back. */
+  deleteSelection() {
+    const { objects, selection } = get()
+    const chosen = objects.filter(o => selection.includes(o.id))
+    const clearable = chosen.filter(o => o.kind === 'text' && o.origin === 'replace' && o.text !== '')
+    if (clearable.length) {
+      const ids = clearable.map(o => o.id)
+      get().mutate(d => {
+        for (const o of d.objects) if (ids.includes(o.id) && o.kind === 'text') o.text = ''
+      })
+      set({ editingTextId: null })
+      return
+    }
+    get().remove(selection)
+  },
+
   duplicate(ids) {
     const copies = get().objects.filter(o => ids.includes(o.id)).map(o => ({
       ...structuredClone(o),

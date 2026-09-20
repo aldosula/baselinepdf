@@ -1,6 +1,9 @@
 import {
-  BlendMode, LineCapStyle, PDFDocument, PDFFont, PDFPage, StandardFonts, degrees, rgb,
+  BlendMode, LineCapStyle, PDFDocument, PDFFont, PDFPage, StandardFonts, beginText, degrees,
+  endText, popGraphicsState, pushGraphicsState, rgb, setFillingRgbColor, setFontAndSize,
+  setTextMatrix, showText,
 } from 'pdf-lib'
+import { fontThatCanWrite, matchFont, resolvePageFonts, type NativeFont } from './nativefont'
 import type { AnyObj, FontKey, PageInfo, Pt, Rect, TextObj } from './types'
 import { applyMatrix, centre, invert, rotatePoint } from './geometry'
 import { dataUrlToBytes } from './image'
@@ -58,6 +61,8 @@ type PageCtx = {
   toPdf: (p: Pt) => Pt
   /** page rotation in degrees, needed to keep drawn content upright */
   rot: number
+  /** the fonts this page already carries, reused for replacement text */
+  fonts: NativeFont[]
 }
 
 /** display-space corner of an object, rotated around its own centre */
@@ -83,6 +88,30 @@ function drawRect(ctx: PageCtx, rect: Rect, rotation: number, opts: {
   })
 }
 
+/** Draws a line in the document's own font, by referencing the font resource
+ *  the page already has. Returns false when that font cannot spell the text. */
+function drawNativeLine(
+  ctx: PageCtx, obj: TextObj, native: NativeFont, line: string, anchor: Pt, size: number,
+): boolean {
+  const encoded = native.encode(line)
+  if (!encoded) return false
+  const p = ctx.toPdf(anchor)
+  const angle = ((ctx.rot - obj.rotation) * Math.PI) / 180
+  const cos = Math.cos(angle), sin = Math.sin(angle)
+  const c = hex(obj.color)
+  ctx.page.pushOperators(
+    pushGraphicsState(),
+    beginText(),
+    setFillingRgbColor(c.red, c.green, c.blue),
+    setFontAndSize(native.resource, size),
+    setTextMatrix(cos, sin, -sin, cos, p.x, p.y),
+    showText(encoded),
+    endText(),
+    popGraphicsState(),
+  )
+  return true
+}
+
 function drawTextObject(ctx: PageCtx, obj: TextObj, font: PDFFont, warn: (m: string) => void) {
   if (obj.mask) {
     // the mask travels with the box, so a rotated replacement still covers its
@@ -96,11 +125,27 @@ function drawTextObject(ctx: PageCtx, obj: TextObj, font: PDFFont, warn: (m: str
     })
   }
   const size = obj.size
-  const ascent = font.heightAtSize(size, { descender: false })
+  // the document's own font is preferred, and its own ascent with it
+  const family = obj.source?.fontName
+  const hasFace = family ? Boolean(matchFont(ctx.fonts, family)) : false
+  const ascent = obj.source ? obj.source.ascentEm * size : font.heightAtSize(size, { descender: false })
   const lineHeight = size * obj.lineGap
   const lines = obj.text.split('\n')
 
   lines.forEach((raw, i) => {
+    // a subset only knows the characters the document already used, so each
+    // resource with this face is tried before falling back
+    const native = family && raw ? fontThatCanWrite(ctx.fonts, family, raw) : undefined
+    if (native) {
+      const width = native.widthOf(raw, size)
+      const dx = width === null || obj.align === 'left'
+        ? 0
+        : obj.align === 'center' ? (obj.rect.w - width) / 2 : obj.rect.w - width
+      const anchor = corner(obj.rect, obj.rotation, { x: dx, y: ascent + i * lineHeight })
+      if (drawNativeLine(ctx, obj, native, raw, anchor, size)) return
+    } else if (hasFace && raw) {
+      warn(`The document's copy of "${family}" does not carry every character you typed, so that line was written in a standard font instead`)
+    }
     const line = sanitise(raw, font, warn)
     if (!line) return
     const width = font.widthOfTextAtSize(line, size)
@@ -226,6 +271,7 @@ export async function exportPdf(
       info,
       toPdf: (p: Pt) => applyMatrix(inv, p),
       rot: info.rotation,
+      fonts: resolvePageFonts(page),
     }
 
     for (const obj of objects.filter(o => o.page === info.index)) {

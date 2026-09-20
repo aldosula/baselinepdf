@@ -7,7 +7,10 @@ file never leaves your machine, and nothing asks for your email.
 ## What it does
 
 - **Edits the text that is already in the file**, in place: same baseline, same size,
-  same face. In a table you get the cell under the pointer, not the whole row.
+  and the document's own font, by reusing the font the file already carries. In a
+  table you get the cell under the pointer, not the whole row.
+- **Pictures that came with the document** can be picked up, moved, resized and
+  deleted, not only ones you add.
 - **Signatures**: draw one, type one, or drop a photo and the paper behind it is
   removed properly, keeping the pen's soft edge instead of leaving a grey halo.
 - Images, highlight, underline, strike, pen and marker, shapes, and a whiteout that
@@ -28,11 +31,13 @@ anywhere and the work still happens on the machine in front of you.
 
 ## Two things worth knowing
 
-**Replaced text uses the standard PDF fonts.** A PDF stores glyphs in subset fonts
-that cannot be typed into, so an edited line is covered with the sampled paper colour
-and rewritten in the nearest of Helvetica, Times or Courier at the original size and
-position. On a document set in Calibri it will be close, not identical. Every editor
-in this category works this way.
+**Replaced text keeps the document's font, when the document lets it.** An edited
+line is covered with the sampled paper colour and rewritten by referencing the font
+resource the file already contains, so the face, the size and the baseline are the
+original ones. Fonts are usually embedded as subsets holding only the characters the
+document already used; if you type a character that subset does not carry, that line
+falls back to the nearest of Helvetica, Times or Courier, and the save tells you which
+line and why.
 
 **Covered is not deleted.** The original characters stay in the file underneath the
 patch, so copy and paste, or `pdftotext`, can still read them. Good enough for fixing

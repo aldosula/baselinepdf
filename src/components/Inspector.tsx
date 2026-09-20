@@ -80,7 +80,7 @@ export function Inspector() {
               <Button variant="outline" size="sm" onClick={() => one && store().bring(one.id, 'front')}><MoveUp size={14} /> Front</Button>
               <Button variant="outline" size="sm" onClick={() => one && store().bring(one.id, 'back')}><MoveDown size={14} /> Back</Button>
               <Button variant="outline" size="sm" onClick={() => store().duplicate(selection)}><Copy size={14} /> Duplicate</Button>
-              <Button variant="danger" size="sm" onClick={() => store().remove(selection)}><Trash2 size={14} /> Delete</Button>
+              <Button variant="danger" size="sm" onClick={() => store().deleteSelection()}><Trash2 size={14} /> Delete</Button>
             </div>
           </Panel>
         </>

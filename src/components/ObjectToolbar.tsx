@@ -152,7 +152,13 @@ export function ObjectToolbar({
       <Btn label="Bring to front" onClick={() => store().bring(obj.id, 'front')}><ArrowUpToLine size={14} /></Btn>
       <Btn label="Send to back" onClick={() => store().bring(obj.id, 'back')}><ArrowDownToLine size={14} /></Btn>
       <Btn label="Duplicate" onClick={() => store().duplicate([obj.id])}><Copy size={14} /></Btn>
-      <Btn label="Delete" danger onClick={() => store().remove([obj.id])}><Trash2 size={14} /></Btn>
+      <Btn
+        label={obj.kind === 'text' && obj.origin === 'replace' && obj.text ? 'Delete the text' : 'Delete'}
+        danger
+        onClick={() => { store().select([obj.id]); store().deleteSelection() }}
+      >
+        <Trash2 size={14} />
+      </Btn>
     </div>
   )
 }

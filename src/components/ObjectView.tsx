@@ -126,7 +126,7 @@ export const ObjectView = memo(function ObjectView({
     case 'text': {
       const size = obj.size * zoom
       const lineHeight = obj.lineGap * size
-      const shift = previewTopShift(obj.font, obj.size, obj.lineGap * obj.size) * zoom
+      const shift = previewTopShift(obj.font, obj.size, obj.lineGap * obj.size, obj.source) * zoom
       return (
         <div style={{ ...base, overflow: 'visible' }}>
           {obj.mask ? (
@@ -143,7 +143,7 @@ export const ObjectView = memo(function ObjectView({
           ) : null}
           {muted ? null : <div
             style={{
-              ...cssFont(obj.font, size),
+              ...cssFont(obj.font, size, obj.source),
               position: 'relative',
               top: px(shift),
               lineHeight: px(lineHeight),

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AnyObj, PageInfo, Pt, Rect, TextLine } from '../lib/types'
+import type { AnyObj, PageImage, PageInfo, Pt, Rect, TextLine } from '../lib/types'
 import { useStore } from '../lib/store'
-import { buildLines, extractRuns, renderPage, sampleColors } from '../lib/pdf'
+import { buildLines, cropRegion, extractImages, extractRuns, renderPage, sampleColors } from '../lib/pdf'
 import { HANDLES, type Handle, handleAnchor, hitTest, resizeRect, snapAngle } from '../lib/hit'
-import { bboxOfStrokes, centre, clamp, padRect, rectFromPoints, rectsIntersect, rotatePoint, simplify, unionRects } from '../lib/geometry'
+import { bboxOfStrokes, centre, clamp, padRect, pointInRect, rectFromPoints, rectsIntersect, rotatePoint, simplify, unionRects } from '../lib/geometry'
 import { baselineOffset } from '../lib/css'
 import { rotatedBounds } from '../lib/bounds'
 import { uid } from '../lib/id'
@@ -27,6 +27,7 @@ export function PageView({ info, zoom, order }: { info: PageInfo; zoom: number; 
   const selection = useStore(s => s.selection)
   const editingTextId = useStore(s => s.editingTextId)
   const lines = useStore(s => s.lines[info.index])
+  const images = useStore(s => s.images[info.index])
   const store = useStore.getState
 
   const hostRef = useRef<HTMLDivElement>(null)
@@ -35,12 +36,14 @@ export function PageView({ info, zoom, order }: { info: PageInfo; zoom: number; 
   const canvasScale = useRef(1)
   const dragRef = useRef<Drag | null>(null)
   const linesJob = useRef<Promise<TextLine[]> | null>(null)
+  const imagesJob = useRef<Promise<PageImage[]> | null>(null)
 
   const [visible, setVisible] = useState(order < 2)
   const [renderScale, setRenderScale] = useState(zoom)
   const [draft, setDraft] = useState<AnyObj | null>(null)
   const [marquee, setMarquee] = useState<Rect | null>(null)
   const [hoverLine, setHoverLine] = useState<TextLine | null>(null)
+  const [hoverImage, setHoverImage] = useState<PageImage | null>(null)
 
   const rot = info.userRotation % 360
   const swap = rot === 90 || rot === 270
@@ -174,9 +177,62 @@ export function PageView({ info, zoom, order }: { info: PageInfo; zoom: number; 
     store().setTool('erase')
   }, [ensureLines, info.index, store])
 
+  const ensureImages = useCallback(async (): Promise<PageImage[]> => {
+    const cached = useStore.getState().images[info.index]
+    if (cached) return cached
+    if (!imagesJob.current && proxy) {
+      imagesJob.current = (async () => {
+        const page = await proxy.getPage(info.index)
+        const found = await extractImages(page)
+        useStore.getState().setImages(info.index, found)
+        return found
+      })()
+    }
+    return (await imagesJob.current) ?? []
+  }, [proxy, info.index])
+
+  // the picture index is cheap and makes the hover affordance possible
+  useEffect(() => {
+    if (!proxy || !visible || images) return
+    if (tool !== 'select' && tool !== 'erase') return
+    void ensureImages()
+  }, [proxy, visible, images, tool, ensureImages])
+
+  /** A picture that is part of the document becomes one you can move: the area
+   *  is lifted out of a high-resolution render, the original is covered with
+   *  the paper around it, and what is left behind is an ordinary object. */
+  const liftImage = useCallback(async (image: PageImage, mode: 'move' | 'erase') => {
+    if (!proxy || !canvasRef.current) return
+    const paper = sampleColors(canvasRef.current, canvasScale.current, padRect(image.rect, 6)).background
+    if (mode === 'erase') {
+      store().add({
+        id: uid('wo'), kind: 'whiteout', page: info.index,
+        rect: image.rect, rotation: 0, opacity: 1, color: paper,
+      })
+      return
+    }
+    const page = await proxy.getPage(info.index)
+    const crop = await cropRegion(page, image.rect)
+    if (!crop) return
+    store().setTool('select')
+    store().mutate(d => {
+      d.objects.push({
+        id: uid('wo'), kind: 'whiteout', page: info.index,
+        rect: image.rect, rotation: 0, opacity: 1, color: paper,
+      })
+      d.objects.push({
+        id: uid('image'), kind: 'image', page: info.index,
+        rect: { ...image.rect }, rotation: 0, opacity: 1,
+        src: crop.src, mime: 'image/png', naturalW: crop.w, naturalH: crop.h, role: 'image',
+      })
+    })
+    const added = useStore.getState().objects
+    store().select([added[added.length - 1].id])
+  }, [proxy, info.index, store])
+
   const replaceLine = useCallback((line: TextLine) => {
     const size = Math.round(line.fontSize * 10) / 10
-    const ascent = baselineOffset(line.font, size)
+    const ascent = baselineOffset(line.font, size, line.source)
     const lineAscent = line.baseline - line.rect.y
     const w = Math.max(line.rect.w + size * 0.4, size * 2)
     const h = size * 1.25
@@ -220,6 +276,7 @@ export function PageView({ info, zoom, order }: { info: PageInfo; zoom: number; 
       align: 'left',
       lineGap: 1.18,
       origin: 'replace',
+      source: line.source,
       mask,
       maskColor: sampled.background,
     }
@@ -282,7 +339,11 @@ export function PageView({ info, zoom, order }: { info: PageInfo; zoom: number; 
     if (tool === 'erase') {
       const hit = hitTest(mine, info.index, p, 4 / zoom)
       if (hit) store().remove([hit.id])
-      else void eraseDocumentText(p)
+      else {
+        const picture = (images ?? []).find(im => pointInRect(p, im.rect))
+        if (picture) void liftImage(picture, 'erase')
+        else void eraseDocumentText(p)
+      }
       dragRef.current = { mode: 'erase' }
       return
     }
@@ -339,6 +400,12 @@ export function PageView({ info, zoom, order }: { info: PageInfo; zoom: number; 
 
     if (!drag) {
       if (tool === 'text' || tool === 'erase') setHoverLine(lineAt(p, e.altKey))
+      if (tool === 'select' || tool === 'erase') {
+        const over = hitTest(mine, info.index, p, 3 / zoom)
+          ? null
+          : (images ?? []).find(im => pointInRect(p, im.rect)) ?? null
+        setHoverImage(over)
+      }
       return
     }
 
@@ -495,9 +562,12 @@ export function PageView({ info, zoom, order }: { info: PageInfo; zoom: number; 
     const hit = hitTest(mine, info.index, p, 3 / zoom)
     if (hit?.kind === 'text') { store().setEditingText(hit.id); return }
     const wholeRow = e.altKey
-    void ensureLines().then(ls => {
+    void ensureLines().then(async ls => {
       const line = pickLine(ls, p, wholeRow)
-      if (line && canvasRef.current) replaceLine(line)
+      if (line && canvasRef.current) { replaceLine(line); return }
+      // no text here: a picture of the document may be, and that can be lifted
+      const picture = (await ensureImages()).find(im => pointInRect(p, im.rect))
+      if (picture) void liftImage(picture, 'move')
     })
   }
 
@@ -522,7 +592,7 @@ export function PageView({ info, zoom, order }: { info: PageInfo; zoom: number; 
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
       onDoubleClick={onDoubleClick}
-      onPointerLeave={() => setHoverLine(null)}
+      onPointerLeave={() => { setHoverLine(null); setHoverImage(null) }}
     >
       <div
         className="absolute top-1/2 left-1/2"
@@ -548,6 +618,24 @@ export function PageView({ info, zoom, order }: { info: PageInfo; zoom: number; 
               transformOrigin: `${(hoverLine.runs[0].x - hoverLine.rect.x) * zoom + 2}px ${(hoverLine.baseline - hoverLine.rect.y) * zoom + 2}px`,
             }}
           />
+        ) : null}
+
+        {hoverImage && !hoverLine ? (
+          <div
+            className={tool === 'erase'
+              ? 'pointer-events-none absolute rounded-[3px] border border-dashed border-red-500/80 bg-red-500/10'
+              : 'pointer-events-none absolute rounded-[3px] border border-dashed border-brand-500/80 bg-brand-500/8'}
+            style={{
+              left: hoverImage.rect.x * zoom,
+              top: hoverImage.rect.y * zoom,
+              width: hoverImage.rect.w * zoom,
+              height: hoverImage.rect.h * zoom,
+            }}
+          >
+            <span className="absolute -top-6 left-0 rounded bg-[var(--surface)] px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap text-dim hairline">
+              {tool === 'erase' ? 'Click to remove this picture' : 'Double click to pick it up'}
+            </span>
+          </div>
         ) : null}
 
         {mine.map(o => (

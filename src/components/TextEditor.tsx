@@ -26,7 +26,7 @@ export function TextEditor({ obj, zoom }: { obj: TextObj; zoom: number }) {
     const lines = text.split('\n')
     let width = obj.rect.w
     if (measurer) {
-      const f = cssFont(obj.font, obj.size)
+      const f = cssFont(obj.font, obj.size, obj.source)
       measurer.font = `${f.fontStyle} ${f.fontWeight} ${obj.size}px ${f.fontFamily}`
       const longest = Math.max(...lines.map(l => measurer.measureText(l || ' ').width))
       width = Math.max(obj.rect.w, longest + obj.size * 0.6)
@@ -66,12 +66,12 @@ export function TextEditor({ obj, zoom }: { obj: TextObj; zoom: number }) {
       style={{
         position: 'absolute',
         left: obj.rect.x * zoom,
-        top: obj.rect.y * zoom + previewTopShift(obj.font, obj.size, obj.lineGap * obj.size) * zoom,
+        top: obj.rect.y * zoom + previewTopShift(obj.font, obj.size, obj.lineGap * obj.size, obj.source) * zoom,
         width: obj.rect.w * zoom,
         height: obj.rect.h * zoom,
         transform: obj.rotation ? `rotate(${obj.rotation}deg)` : undefined,
         transformOrigin: 'center center',
-        ...cssFont(obj.font, size),
+        ...cssFont(obj.font, size, obj.source),
         lineHeight: `${lineHeight}px`,
         color: obj.color,
         textAlign: obj.align,
