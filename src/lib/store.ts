@@ -321,7 +321,10 @@ export const useStore = create<State & Actions>((set, get) => ({
     const useHistory = options?.history !== false
     set(s => {
       const before = useHistory ? snapshot(s) : null
-      const draft = { objects: [...s.objects], pages: [...s.pages] }
+      // every object gets a fresh identity: a mutator that edits one in place
+      // would otherwise leave React looking at the same reference, and the
+      // change would only appear the next time something else re-rendered
+      const draft = { objects: s.objects.map(o => ({ ...o })), pages: s.pages.map(p => ({ ...p })) }
       fn(draft)
       return {
         objects: draft.objects,
@@ -367,11 +370,21 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
 
   duplicate(ids) {
-    const copies = get().objects.filter(o => ids.includes(o.id)).map(o => ({
-      ...structuredClone(o),
-      id: uid(o.kind),
-      rect: { ...o.rect, x: o.rect.x + 12, y: o.rect.y + 12 },
-    }))
+    const copies = get().objects.filter(o => ids.includes(o.id)).map(o => {
+      const copy = {
+        ...structuredClone(o),
+        id: uid(o.kind),
+        rect: { ...o.rect, x: o.rect.x + 12, y: o.rect.y + 12 },
+      }
+      // a copy of a replacement is just a text box: carrying the cover patch
+      // along would paint a white rectangle over whatever it lands on
+      if (copy.kind === 'text' && copy.origin === 'replace') {
+        copy.origin = 'new'
+        delete copy.mask
+        delete copy.maskColor
+      }
+      return copy
+    })
     if (!copies.length) return
     get().mutate(d => { d.objects.push(...copies) })
     set({ selection: copies.map(c => c.id) })

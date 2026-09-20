@@ -7,8 +7,10 @@ file never leaves your machine, and nothing asks for your email.
 ## What it does
 
 - **Edits the text that is already in the file**, in place: same baseline, same size,
-  and the document's own font, by reusing the font the file already carries. In a
-  table you get the cell under the pointer, not the whole row.
+  and the document's own font, by reusing the font the file already carries. A
+  justified line stays justified, because the replacement is stretched to the width
+  the original ran to. In a table you get the cell under the pointer, not the whole
+  row; pick a standard font from the panel and it switches away from the document's.
 - **Pictures that came with the document** can be picked up, moved, resized and
   deleted, not only ones you add.
 - **Signatures**: draw one, type one, or drop a photo and the paper behind it is

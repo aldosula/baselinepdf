@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import type { TextObj } from '../lib/types'
 import { useStore } from '../lib/store'
-import { cssFont, previewTopShift } from '../lib/css'
+import { activeSource, cssFont, previewSpacing, previewTopShift } from '../lib/css'
 
 const measurer = document.createElement('canvas').getContext('2d')
 
@@ -66,12 +66,17 @@ export function TextEditor({ obj, zoom }: { obj: TextObj; zoom: number }) {
       style={{
         position: 'absolute',
         left: obj.rect.x * zoom,
-        top: obj.rect.y * zoom + previewTopShift(obj.font, obj.size, obj.lineGap * obj.size, obj.source) * zoom,
+        top: obj.rect.y * zoom + previewTopShift(obj.font, obj.size, obj.lineGap * obj.size, activeSource(obj)) * zoom,
         width: obj.rect.w * zoom,
         height: obj.rect.h * zoom,
-        transform: obj.rotation ? `rotate(${obj.rotation}deg)` : undefined,
-        transformOrigin: 'center center',
-        ...cssFont(obj.font, size, obj.source),
+        // rotation and glyph scaling have to share the one transform
+        transform: [
+          obj.rotation ? `rotate(${obj.rotation}deg)` : '',
+          obj.hScale && Math.abs(obj.hScale - 1) > 0.01 ? `scaleX(${obj.hScale})` : '',
+        ].filter(Boolean).join(' ') || undefined,
+        transformOrigin: obj.hScale && Math.abs(obj.hScale - 1) > 0.01 ? 'left center' : 'center center',
+        ...cssFont(obj.font, size, activeSource(obj)),
+        ...previewSpacing(obj, zoom),
         lineHeight: `${lineHeight}px`,
         color: obj.color,
         textAlign: obj.align,

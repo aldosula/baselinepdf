@@ -1,6 +1,6 @@
 import { memo } from 'react'
 import type { AnyObj } from '../lib/types'
-import { cssFont, previewTopShift } from '../lib/css'
+import { activeSource, cssFont, previewScale, previewSpacing, previewTopShift } from '../lib/css'
 
 const px = (v: number) => `${v}px`
 
@@ -126,7 +126,7 @@ export const ObjectView = memo(function ObjectView({
     case 'text': {
       const size = obj.size * zoom
       const lineHeight = obj.lineGap * size
-      const shift = previewTopShift(obj.font, obj.size, obj.lineGap * obj.size, obj.source) * zoom
+      const shift = previewTopShift(obj.font, obj.size, obj.lineGap * obj.size, activeSource(obj)) * zoom
       return (
         <div style={{ ...base, overflow: 'visible' }}>
           {obj.mask ? (
@@ -143,7 +143,9 @@ export const ObjectView = memo(function ObjectView({
           ) : null}
           {muted ? null : <div
             style={{
-              ...cssFont(obj.font, size, obj.source),
+              ...cssFont(obj.font, size, activeSource(obj)),
+              ...previewSpacing(obj, zoom),
+              ...previewScale(obj.hScale),
               position: 'relative',
               top: px(shift),
               lineHeight: px(lineHeight),

@@ -1,7 +1,8 @@
 import {
-  BlendMode, LineCapStyle, PDFDocument, PDFFont, PDFPage, StandardFonts, beginText, degrees,
-  endText, popGraphicsState, pushGraphicsState, rgb, setFillingRgbColor, setFontAndSize,
-  setTextMatrix, showText,
+  BlendMode, LineCapStyle, PDFArray, PDFContext, PDFDocument, PDFFont, PDFNumber, PDFOperator,
+  PDFOperatorNames, PDFPage, StandardFonts, beginText, degrees, endText, popGraphicsState,
+  pushGraphicsState, rgb, setCharacterSpacing, setFillingRgbColor, setFontAndSize, setTextMatrix,
+  showText,
 } from 'pdf-lib'
 import { fontThatCanWrite, matchFont, resolvePageFonts, type NativeFont } from './nativefont'
 import type { AnyObj, FontKey, PageInfo, Pt, Rect, TextObj } from './types'
@@ -63,6 +64,7 @@ type PageCtx = {
   rot: number
   /** the fonts this page already carries, reused for replacement text */
   fonts: NativeFont[]
+  context: PDFContext
 }
 
 /** display-space corner of an object, rotated around its own centre */
@@ -88,10 +90,48 @@ function drawRect(ctx: PageCtx, rect: Rect, rotation: number, opts: {
   })
 }
 
+/** How much spacing has to be added, per space or per character, for the new
+ *  text to run exactly as wide as the line it replaces. That is what keeps a
+ *  justified paragraph justified instead of leaving a ragged hole. */
+function spacingToMatch(
+  text: string, natural: number | null, target: number | undefined, size: number, allowance: number,
+) {
+  if (!target || natural === null || natural <= 0) return null
+  const delta = target - natural
+  if (Math.abs(delta) < 0.05) return null
+  const spaces = (text.match(/ /g) ?? []).length
+  if (spaces > 0) {
+    const perSpace = delta / spaces
+    // the file's own stretch sets the ceiling: reproducing it is faithful, and
+    // anything far beyond it would be the user's text length, not justification
+    if (perSpace < -size * 0.22 || perSpace > allowance) return null
+    return { word: perSpace, char: 0 }
+  }
+  const gaps = [...text].length - 1
+  if (gaps < 1) return null
+  const perChar = delta / gaps
+  if (perChar < -size * 0.08 || perChar > size * 0.4) return null
+  return { word: 0, char: perChar }
+}
+
+/** How far the file itself had already stretched this line's spaces. A
+ *  replacement may go that far and a little beyond, and no further. */
+function allowanceFor(obj: TextObj, native: NativeFont, size: number) {
+  const floor = size * 1.4
+  if (!obj.sourceText || !obj.advance) return floor
+  const spaces = (obj.sourceText.match(/ /g) ?? []).length
+  if (spaces < 1) return floor
+  const natural = native.widthOf(obj.sourceText, size)
+  if (natural === null || natural <= 0) return floor
+  const already = ((obj.advance - natural * (obj.hScale ?? 1)) / spaces) * 1.35
+  return Math.max(floor, already)
+}
+
 /** Draws a line in the document's own font, by referencing the font resource
  *  the page already has. Returns false when that font cannot spell the text. */
 function drawNativeLine(
   ctx: PageCtx, obj: TextObj, native: NativeFont, line: string, anchor: Pt, size: number,
+  spacing: { word: number; char: number } | null,
 ): boolean {
   const encoded = native.encode(line)
   if (!encoded) return false
@@ -99,13 +139,42 @@ function drawNativeLine(
   const angle = ((ctx.rot - obj.rotation) * Math.PI) / 180
   const cos = Math.cos(angle), sin = Math.sin(angle)
   const c = hex(obj.color)
+  const hScale = obj.hScale && Math.abs(obj.hScale - 1) > 0.01 ? obj.hScale : null
+
+  /* Word spacing has to be done by hand. The Tw operator is defined to act on
+     the single byte 32, so it does nothing at all for the two-byte codes of a
+     composite font, which is what an embedded TrueType face uses. Writing the
+     line as TJ with an explicit backwards nudge after each space works for
+     every kind of font. */
+  let show = showText(encoded)
+  if (spacing?.word) {
+    const pieces: (PDFNumber | typeof encoded)[] = []
+    const words = line.split(' ')
+    let ok = true
+    words.forEach((word, i) => {
+      const last = i === words.length - 1
+      const chunk = native.encode(last ? word : `${word} `)
+      if (!chunk) { ok = false; return }
+      pieces.push(chunk)
+      // TJ moves left by value/1000 of the type size, so extra space is negative
+      if (!last) pieces.push(PDFNumber.of((-spacing.word / size) * 1000))
+    })
+    if (ok && pieces.length) {
+      const array = PDFArray.withContext(ctx.context)
+      for (const piece of pieces) array.push(piece)
+      show = PDFOperator.of(PDFOperatorNames.ShowTextAdjusted, [array])
+    }
+  }
+
   ctx.page.pushOperators(
     pushGraphicsState(),
     beginText(),
     setFillingRgbColor(c.red, c.green, c.blue),
     setFontAndSize(native.resource, size),
+    ...(hScale ? [PDFOperator.of(PDFOperatorNames.SetTextHorizontalScaling, [PDFNumber.of(hScale * 100)])] : []),
+    ...(spacing?.char ? [setCharacterSpacing(spacing.char)] : []),
     setTextMatrix(cos, sin, -sin, cos, p.x, p.y),
-    showText(encoded),
+    show,
     endText(),
     popGraphicsState(),
   )
@@ -126,9 +195,10 @@ function drawTextObject(ctx: PageCtx, obj: TextObj, font: PDFFont, warn: (m: str
   }
   const size = obj.size
   // the document's own font is preferred, and its own ascent with it
-  const family = obj.source?.fontName
+  const source = obj.sourceOff ? undefined : obj.source
+  const family = source?.fontName
   const hasFace = family ? Boolean(matchFont(ctx.fonts, family)) : false
-  const ascent = obj.source ? obj.source.ascentEm * size : font.heightAtSize(size, { descender: false })
+  const ascent = source ? source.ascentEm * size : font.heightAtSize(size, { descender: false })
   const lineHeight = size * obj.lineGap
   const lines = obj.text.split('\n')
 
@@ -137,12 +207,18 @@ function drawTextObject(ctx: PageCtx, obj: TextObj, font: PDFFont, warn: (m: str
     // resource with this face is tried before falling back
     const native = family && raw ? fontThatCanWrite(ctx.fonts, family, raw) : undefined
     if (native) {
-      const width = native.widthOf(raw, size)
+      const natural = native.widthOf(raw, size)
+      const scaled = natural === null ? null : natural * (obj.hScale ?? 1)
+      // only the first line of a replacement inherits the original's width
+      const spacing = i === 0 && obj.origin === 'replace'
+        ? spacingToMatch(raw, scaled, obj.advance, size, allowanceFor(obj, native, size))
+        : null
+      const width = scaled
       const dx = width === null || obj.align === 'left'
         ? 0
         : obj.align === 'center' ? (obj.rect.w - width) / 2 : obj.rect.w - width
       const anchor = corner(obj.rect, obj.rotation, { x: dx, y: ascent + i * lineHeight })
-      if (drawNativeLine(ctx, obj, native, raw, anchor, size)) return
+      if (drawNativeLine(ctx, obj, native, raw, anchor, size, spacing)) return
     } else if (hasFace && raw) {
       warn(`The document's copy of "${family}" does not carry every character you typed, so that line was written in a standard font instead`)
     }
@@ -272,6 +348,7 @@ export async function exportPdf(
       toPdf: (p: Pt) => applyMatrix(inv, p),
       rot: info.rotation,
       fonts: resolvePageFonts(page),
+      context: doc.context,
     }
 
     for (const obj of objects.filter(o => o.page === info.index)) {

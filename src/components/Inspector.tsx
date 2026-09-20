@@ -6,6 +6,10 @@ import { useStore } from '../lib/store'
 import { Button, ColorPicker, Field, Panel, Segmented, Slider } from './ui'
 
 const FONTS = Object.keys(FONT_LABELS) as FontKey[]
+const DOCUMENT_FONT = '__document'
+/** "ABCDEF+Arial-BoldMT-250" is not a name to show anybody. */
+const documentFontLabel = (raw: string) =>
+  `${raw.replace(/^[A-Z]{6}\+/, '').replace(/-\d+$/, '').replace(/[-_]/g, ' ') || 'Document font'} (in the file)`
 
 export function Inspector() {
   const objects = useStore(s => s.objects)
@@ -118,14 +122,29 @@ const label = (o: AnyObj) =>
 function TextProps({ obj, patch }: { obj: Extract<AnyObj, { kind: 'text' }>; patch: (p: Partial<AnyObj>) => void }) {
   const retype = (next: { size?: number; font?: FontKey }) => patch(retypePatch(obj, next) as Partial<AnyObj>)
 
+  /** Picking a face by hand means the document's own font steps aside. */
+  const chooseFont = (value: string) => {
+    if (value === DOCUMENT_FONT) {
+      patch({ sourceOff: false, ...retypePatch({ ...obj, sourceOff: false }, {}) } as Partial<AnyObj>)
+      return
+    }
+    patch({ sourceOff: true, ...retypePatch({ ...obj, sourceOff: true }, { font: value as FontKey }) } as Partial<AnyObj>)
+  }
+
   return (
     <>
-      <Field label="Font">
+      <Field
+        label="Font"
+        hint={obj.source && !obj.sourceOff ? 'Written in the font the document itself carries.' : undefined}
+      >
         <select
-          value={obj.font}
-          onChange={e => retype({ font: e.target.value as FontKey })}
+          value={obj.source && !obj.sourceOff ? DOCUMENT_FONT : obj.font}
+          onChange={e => chooseFont(e.target.value)}
           className="surface-2 h-9 w-full rounded-[var(--radius-sm)] hairline px-2 text-[13px] outline-none focus:border-brand-500"
         >
+          {obj.source ? (
+            <option value={DOCUMENT_FONT}>{documentFontLabel(obj.source.fontName)}</option>
+          ) : null}
           {FONTS.map(f => <option key={f} value={f}>{FONT_LABELS[f]}</option>)}
         </select>
       </Field>

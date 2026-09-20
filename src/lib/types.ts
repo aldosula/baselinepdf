@@ -38,6 +38,16 @@ export type TextObj = Base & {
   /** when set, the text is written in the document's own font rather than in
    *  one of the 14 standard ones */
   source?: { fontId: string; fontName: string; ascentEm: number }
+  /** the user picked a standard font by hand, so the document's own is ignored */
+  sourceOff?: boolean
+  /** the width the original line ran to; spacing is stretched to match it, so
+   *  a justified paragraph stays justified */
+  advance?: number
+  /** the text that was there before, which says how much the file itself had
+   *  already stretched the spaces */
+  sourceText?: string
+  /** horizontal glyph scaling of the original line */
+  hScale?: number
   /** the original glyph box that must be covered, page space */
   mask?: Rect
   maskColor?: string
@@ -126,6 +136,8 @@ export type TextRun = {
   fontSize: number
   ascent: number
   angle: number
+  /** horizontal scaling of the glyphs, 1 unless the file squeezes the text */
+  hScale: number
   fontFamily: string
   bold: boolean
   italic: boolean
@@ -149,6 +161,9 @@ export type TextLine = {
   font: FontKey
   /** the document's own font for this line, used to keep it on export */
   source: { fontId: string; fontName: string; ascentEm: number }
+  /** how wide the original line actually ran, which is what justification set */
+  advance: number
+  hScale: number
   /** empty on a cell, one entry per column on a row that was split */
   cells: TextLine[]
   /** how far the cover patch may spread before it touches the next cell */

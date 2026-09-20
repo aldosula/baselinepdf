@@ -81,3 +81,69 @@ export function previewTopShift(font: FontKey, size: number, lineHeight: number,
   const cssBaseline = (lineHeight - (screen.asc + screen.desc) * size) / 2 + screen.asc * size
   return baselineOffset(font, size, source) - cssBaseline
 }
+
+/** The document's own font, unless the user has chosen a standard one instead. */
+export const activeSource = (obj: { source?: FontSource; sourceOff?: boolean }) =>
+  obj.sourceOff ? undefined : obj.source
+
+const ruler = typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d')
+
+/** Width of `text` as the screen will draw it, in points. */
+export function measureText(text: string, font: FontKey, size: number, source?: FontSource) {
+  if (!ruler || !text) return 0
+  const f = cssFont(font, size, source)
+  ruler.font = `${f.fontStyle} ${f.fontWeight} ${size}px ${f.fontFamily}`
+  return ruler.measureText(text).width
+}
+
+type SpacedText = {
+  text: string
+  font: FontKey
+  size: number
+  source?: FontSource
+  sourceOff?: boolean
+  advance?: number
+  hScale?: number
+  sourceText?: string
+  origin: 'new' | 'replace'
+}
+
+/** The same stretch the exporter will apply, expressed as CSS, so what you see
+ *  while typing is what the saved file will show. Kept in one place on purpose:
+ *  the two must agree or the editor lies. */
+export function previewSpacing(obj: SpacedText, zoom: number): React.CSSProperties {
+  if (obj.origin !== 'replace' || !obj.advance) return {}
+  const first = obj.text.split('\n')[0]
+  if (!first) return {}
+  const natural = measureText(first, obj.font, obj.size, activeSource(obj)) * (obj.hScale ?? 1)
+  if (!natural) return {}
+  const delta = obj.advance - natural
+  if (Math.abs(delta) < 0.05) return {}
+
+  const spaces = (first.match(/ /g) ?? []).length
+  if (spaces > 0) {
+    const per = delta / spaces
+    // the same ceiling the exporter uses, so the two agree
+    const originalSpaces = (obj.sourceText?.match(/ /g) ?? []).length
+    const originalNatural = obj.sourceText
+      ? measureText(obj.sourceText, obj.font, obj.size, activeSource(obj)) * (obj.hScale ?? 1)
+      : 0
+    const already = originalSpaces > 0 && originalNatural > 0
+      ? ((obj.advance - originalNatural) / originalSpaces) * 1.35
+      : 0
+    const allowance = Math.max(obj.size * 1.4, already)
+    if (per < -obj.size * 0.22 || per > allowance) return {}
+    return { wordSpacing: `${per * zoom}px` }
+  }
+  const gaps = [...first].length - 1
+  if (gaps < 1) return {}
+  const per = delta / gaps
+  if (per < -obj.size * 0.08 || per > obj.size * 0.4) return {}
+  return { letterSpacing: `${per * zoom}px` }
+}
+
+/** Horizontal glyph scaling, as CSS. */
+export const previewScale = (hScale?: number): React.CSSProperties =>
+  hScale && Math.abs(hScale - 1) > 0.01
+    ? { transform: `scaleX(${hScale})`, transformOrigin: 'left top' }
+    : {}

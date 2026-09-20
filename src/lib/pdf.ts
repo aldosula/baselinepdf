@@ -91,6 +91,8 @@ export async function extractRuns(page: PDFPageProxy): Promise<TextRun[]> {
     if (!item.str || !item.transform || !item.str.trim()) continue
     const tx = pdfjs.Util.transform(viewport.transform, item.transform)
     const fontSize = Math.hypot(tx[2], tx[3]) || item.height || 10
+    // some files set the glyphs narrower or wider than the type size (Tz)
+    const hScale = fontSize > 0 ? Math.hypot(tx[0], tx[1]) / fontSize : 1
     const angle = (Math.atan2(tx[1], tx[0]) * 180) / Math.PI
     const style = (item.fontName && styles[item.fontName]) || {}
     const ascent = typeof style.ascent === 'number' && style.ascent > 0 ? style.ascent : 0.78
@@ -120,6 +122,7 @@ export async function extractRuns(page: PDFPageProxy): Promise<TextRun[]> {
       fontSize,
       ascent: fontSize * ascent,
       angle,
+      hScale: Number.isFinite(hScale) && hScale > 0.2 && hScale < 5 ? hScale : 1,
       fontFamily: name,
       bold: /bold|black|heavy|semibold|600|700|800|900/i.test(name),
       italic: /italic|oblique/i.test(name),
@@ -142,28 +145,59 @@ function advanceGap(prev: TextRun, run: TextRun): number {
   return (run.x - endX) * dx + (run.y - endY) * dy
 }
 
-/** Column starts of the page: an x that several different rows begin a run at
- *  is a column edge, not a coincidence. Used to catch narrow table gutters
- *  that the width test alone would read as a word space. */
-function detectColumns(rows: TextRun[][]): number[] {
-  const tally = new Map<number, Set<number>>()
+/** Column edges of the page. A left-aligned column shows up as an x where
+ *  several rows start a run; a right-aligned one, such as a money column, shows
+ *  up as an x where several rows end one. Both are needed: the numbers in an
+ *  invoice never start at the same place. */
+type Columns = { starts: number[]; ends: number[] }
+
+function detectColumns(rows: TextRun[][]): Columns {
+  const startRows = new Map<number, Set<number>>()
+  const endRows = new Map<number, Set<number>>()
+  const note = (map: Map<number, Set<number>>, value: number, row: number) => {
+    const key = Math.round(value)
+    for (const k of [key - 1, key, key + 1]) {
+      if (!map.has(k)) map.set(k, new Set())
+      map.get(k)!.add(row)
+    }
+  }
+
   rows.forEach((row, i) => {
     if (Math.abs(row[0]?.angle ?? 0) > 0.5) return
     for (const run of row) {
-      const key = Math.round(run.x)
-      for (const k of [key - 1, key, key + 1]) {
-        if (!tally.has(k)) tally.set(k, new Set())
-        tally.get(k)!.add(i)
-      }
+      note(startRows, run.x, i)
+      const rad = (run.angle * Math.PI) / 180
+      note(endRows, run.x + run.width * Math.cos(rad), i)
     }
   })
-  return [...tally.entries()].filter(([, seen]) => seen.size >= 3).map(([x]) => x).sort((a, b) => a - b)
+
+  const shared = (map: Map<number, Set<number>>) =>
+    [...map.entries()].filter(([, seen]) => seen.size >= 3).map(([x]) => x).sort((a, b) => a - b)
+
+  return { starts: shared(startRows), ends: shared(endRows) }
 }
 
 /** Splits one row at its column gutters, and at anything that is plainly not a
  *  continuation: a run that starts back under the previous one is a separate
- *  piece of text, not the next word. */
-function splitCells(ordered: TextRun[], columns: number[]): TextRun[][] {
+ *  piece of text, not the next word.
+ *
+ *  The hard part is telling a table gutter from a justified paragraph, whose
+ *  word gaps are stretched wide on purpose. Two signals settle it: a gutter
+ *  lines up with an edge that other rows share, and it is far wider than the
+ *  other gaps in its own row. Justification stretches every gap by about the
+ *  same amount and lines up with nothing. */
+function splitCells(ordered: TextRun[], columns: Columns): TextRun[][] {
+  const gaps: number[] = []
+  for (let i = 1; i < ordered.length; i++) {
+    const gap = advanceGap(ordered[i - 1], ordered[i])
+    if (gap > 0.2) gaps.push(gap)
+  }
+  const sorted = [...gaps].sort((a, b) => a - b)
+  // the typical gap of this row, taken low so one huge gutter cannot raise it
+  const base = sorted.length ? sorted[Math.floor(sorted.length * 0.25)] : 0
+
+  const near = (values: number[], x: number) => values.some(v => Math.abs(v - x) <= 1.4)
+
   const cells: TextRun[][] = []
   let current: TextRun[] = []
   for (const run of ordered) {
@@ -171,11 +205,20 @@ function splitCells(ordered: TextRun[], columns: number[]): TextRun[][] {
     if (prev) {
       const gap = advanceGap(prev, run)
       const em = Math.max(prev.fontSize, run.fontSize, 1)
-      // a word space is about a quarter of an em, and justification stretches
-      // it; a gutter is far wider than anything justification produces
-      const onColumn = columns.some(c => Math.abs(run.x - c) <= 1.2)
+      const rad = (prev.angle * Math.PI) / 180
+      const prevEnd = prev.x + prev.width * Math.cos(rad)
+      const runEnd = run.x + run.width * Math.cos((run.angle * Math.PI) / 180)
+      // every line of a justified paragraph ends on the same right margin, so a
+      // shared right edge only means a right-aligned cell when the gap before
+      // it is also out of the ordinary for this row
+      const bigForRow = base > 0 && gaps.length >= 3 ? gap > base * 2 : gap > em * 1.2
+      const structural =
+        near(columns.starts, run.x) ||
+        near(columns.ends, prevEnd) ||
+        (near(columns.ends, runEnd) && bigForRow)
       const overlaps = gap < -em * 0.4
-      if (overlaps || gap > em * 1.1 || (onColumn && gap > em * 0.5)) {
+      const outlier = gap > em * 1.1 && (base <= 0 || gap > base * 3)
+      if (overlaps || (structural && gap > em * 0.6) || outlier) {
         cells.push(current)
         current = []
       }
@@ -220,8 +263,13 @@ function lineFrom(ordered: TextRun[], padLeft: number, padRight: number): TextLi
     parts.push(run.str)
   })
   const lead = dominant(ordered)
+  const last = ordered[ordered.length - 1]
+  // the distance the original line actually covered, adjustments and all
+  const advance = advanceGap(ordered[0], last) + ordered[0].width + last.width
   return {
     source: { fontId: lead.fontId, fontName: lead.fontName, ascentEm: lead.ascentEm },
+    advance: ordered.length === 1 ? lead.width : advance,
+    hScale: lead.hScale,
     id: uid('line'),
     page: ordered[0].page,
     runs: ordered,

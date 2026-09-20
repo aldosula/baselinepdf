@@ -277,6 +277,9 @@ export function PageView({ info, zoom, order }: { info: PageInfo; zoom: number; 
       lineGap: 1.18,
       origin: 'replace',
       source: line.source,
+      advance: line.advance,
+      hScale: line.hScale,
+      sourceText: line.text,
       mask,
       maskColor: sampled.background,
     }
